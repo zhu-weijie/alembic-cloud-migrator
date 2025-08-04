@@ -15,10 +15,6 @@ jobs:
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
-    # Define the output name for this job
-    outputs:
-      image_uri: ${{ steps.build-image.outputs.image_uri }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,24 +29,28 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: Build, tag, push, and save image URI
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_NAME }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          # CORRECTED: Use a consistent output name 'image_uri'
-          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo $IMAGE_URI > image-uri.txt
+
+      - name: Upload image URI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-uri-artifact
+          path: image-uri.txt
 
   deploy:
     name: Deploy to ECS
     runs-on: ubuntu-latest
-    # This job needs the output from the first job
     needs: build-and-push
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -60,6 +60,15 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download image URI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-uri-artifact
+
+      - name: Read image URI from file
+        id: image-uri-step
+        run: echo "image_uri=$(cat image-uri.txt)" >> $GITHUB_OUTPUT
 
       - name: Download task definition
         run: |
@@ -71,8 +80,7 @@ jobs:
         with:
           task-definition: task-definition.json
           container-name: ${{ secrets.ECS_CONTAINER_NAME }}
-          # This now correctly receives the 'image_uri' output from the previous job
-          image: ${{ needs.build-and-push.outputs.image_uri }}
+          image: ${{ steps.image-uri-step.outputs.image_uri }}
 
       - name: Deploy Amazon ECS task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
