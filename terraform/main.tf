@@ -109,3 +109,56 @@ resource "aws_ecr_repository" "app" {
     Name = "${var.project_name}-repo"
   }
 }
+
+# 6. Security Groups
+resource "aws_security_group" "ecs_service" {
+  name        = "${var.project_name}-ecs-sg"
+  description = "Allow all outbound traffic for ECS tasks"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-ecs-sg"
+  }
+}
+
+resource "aws_security_group" "database" {
+  name        = "${var.project_name}-db-sg"
+  description = "Allow inbound postgres traffic from the ECS service"
+  vpc_id      = aws_vpc.main.id
+
+  # Inbound rule from the ECS Security Group
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_service.id]
+  }
+
+  # Outbound rule (allow all)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-db-sg"
+  }
+}
+
+# 7. ECS Cluster
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project_name}-cluster"
+
+  tags = {
+    Name = "${var.project_name}-cluster"
+  }
+}
