@@ -88,9 +88,15 @@ resource "aws_iam_role_policy" "github_actions_ecr_ecs" {
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
+      # CORRECTED: This action must have Resource "*"
+      {
+        Action   = "ecr:GetAuthorizationToken",
+        Effect   = "Allow",
+        Resource = "*"
+      },
+      # This statement is for actions specific to our repository
       {
         Action = [
-          "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:InitiateLayerUpload",
           "ecr:UploadLayerPart",
@@ -100,6 +106,7 @@ resource "aws_iam_role_policy" "github_actions_ecr_ecs" {
         Effect   = "Allow",
         Resource = aws_ecr_repository.app.arn
       },
+      # This statement for ECS remains the same
       {
         Action = [
           "ecs:DescribeTaskDefinition",

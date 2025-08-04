@@ -1,3 +1,5 @@
+# .github/workflows/deploy.yml
+
 name: Deploy to AWS
 
 on:
@@ -13,8 +15,9 @@ jobs:
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
+    # Define the output name for this job
     outputs:
-      image_uri: ${{ steps.build-image.outputs.image }}
+      image_uri: ${{ steps.build-image.outputs.image_uri }}
 
     steps:
       - name: Checkout code
@@ -26,7 +29,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: "Login to Amazon ECR"
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -39,11 +42,13 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          # CORRECTED: Use a consistent output name 'image_uri'
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   deploy:
     name: Deploy to ECS
     runs-on: ubuntu-latest
+    # This job needs the output from the first job
     needs: build-and-push
 
     steps:
@@ -66,6 +71,7 @@ jobs:
         with:
           task-definition: task-definition.json
           container-name: ${{ secrets.ECS_CONTAINER_NAME }}
+          # This now correctly receives the 'image_uri' output from the previous job
           image: ${{ needs.build-and-push.outputs.image_uri }}
 
       - name: Deploy Amazon ECS task definition
