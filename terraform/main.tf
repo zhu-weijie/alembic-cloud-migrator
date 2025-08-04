@@ -1,3 +1,5 @@
+provider "random" {}
+
 # Configure the AWS Provider
 provider "aws" {
   region = var.aws_region
@@ -26,13 +28,23 @@ resource "aws_subnet" "public" {
   }
 }
 
-resource "aws_subnet" "private" {
+resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.2.0/24"
   availability_zone = "${var.aws_region}a"
 
   tags = {
     Name = "${var.project_name}-private-subnet"
+  }
+}
+
+resource "aws_subnet" "private_b" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.3.0/24" # A new, non-overlapping CIDR block
+  availability_zone = "${var.aws_region}b"
+
+  tags = {
+    Name = "${var.project_name}-private-subnet-b"
   }
 }
 
@@ -91,8 +103,13 @@ resource "aws_route_table" "private" {
   }
 }
 
-resource "aws_route_table_association" "private" {
-  subnet_id      = aws_subnet.private.id
+resource "aws_route_table_association" "private_a" {
+  subnet_id      = aws_subnet.private_a.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_b" {
+  subnet_id      = aws_subnet.private_b.id
   route_table_id = aws_route_table.private.id
 }
 
@@ -161,4 +178,134 @@ resource "aws_ecs_cluster" "main" {
   tags = {
     Name = "${var.project_name}-cluster"
   }
+}
+
+
+# 8. Database Subnet Group
+resource "aws_db_subnet_group" "default" {
+  name       = "${var.project_name}-db-subnet-group"
+  subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Now includes both subnets
+
+  tags = {
+    Name = "${var.project_name}-db-subnet-group"
+  }
+}
+
+# 9. Random Password for DB
+resource "random_password" "db_password" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&'()*+,-./:;<=>?@[]^_`{|}~"
+}
+
+# 10. RDS PostgreSQL Instance
+resource "aws_db_instance" "default" {
+  identifier             = "${var.project_name}-db"
+  allocated_storage      = 20
+  storage_type           = "gp2"
+  engine                 = "postgres"
+  engine_version         = "16.3"
+  instance_class         = "db.t3.micro"
+  db_name                = "alembic_migrator_db"
+  username               = "postgres_admin"
+  password               = random_password.db_password.result
+  db_subnet_group_name   = aws_db_subnet_group.default.name
+  vpc_security_group_ids = [aws_security_group.database.id]
+  skip_final_snapshot    = true
+  publicly_accessible    = false
+}
+
+# 11. Secrets Manager Secret
+
+resource "random_string" "secret_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+resource "aws_secretsmanager_secret" "db_credentials" {
+  name = "${var.project_name}-db-credentials-${random_string.secret_suffix.result}"
+}
+
+resource "aws_secretsmanager_secret_version" "db_credentials" {
+  secret_id = aws_secretsmanager_secret.db_credentials.id
+  secret_string = jsonencode({
+    POSTGRES_USER     = aws_db_instance.default.username
+    POSTGRES_PASSWORD = aws_db_instance.default.password
+    POSTGRES_SERVER   = aws_db_instance.default.address
+    POSTGRES_DB       = aws_db_instance.default.db_name
+  })
+}
+
+# 12. ECS Task Definition
+resource "aws_ecs_task_definition" "app" {
+  family                   = "${var.project_name}-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256" # 0.25 vCPU
+  memory                   = "512" # 512 MiB
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name = "${var.project_name}-container"
+      # IMPORTANT: This is a placeholder. The CI/CD pipeline will replace this.
+      image     = "${aws_ecr_repository.app.repository_url}:latest"
+      essential = true
+      # This is how the container gets the database credentials securely
+      secrets = [
+        {
+          name      = "POSTGRES_USER",
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_USER::"
+        },
+        {
+          name      = "POSTGRES_PASSWORD",
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_PASSWORD::"
+        },
+        {
+          name      = "POSTGRES_SERVER",
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_SERVER::"
+        },
+        {
+          name      = "POSTGRES_DB",
+          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_DB::"
+        }
+      ],
+      logConfiguration = {
+        logDriver = "awslogs",
+        options = {
+          "awslogs-group"         = "/ecs/${var.project_name}",
+          "awslogs-region"        = var.aws_region,
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+}
+
+# This resource creates the CloudWatch log group defined in the task definition
+resource "aws_cloudwatch_log_group" "ecs_logs" {
+  name = "/ecs/${var.project_name}"
+
+  tags = {
+    Name = "${var.project_name}-log-group"
+  }
+}
+
+# 13. ECS Service
+resource "aws_ecs_service" "main" {
+  name            = "${var.project_name}-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.app.arn
+  desired_count   = 1 # Run one instance of our task
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups = [aws_security_group.ecs_service.id]
+  }
+
+  # This dependency is important. It ensures that the NAT Gateway is ready
+  # before the service tries to pull an image from ECR.
+  depends_on = [aws_nat_gateway.nat]
 }
