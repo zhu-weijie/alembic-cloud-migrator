@@ -166,7 +166,6 @@ resource "aws_secretsmanager_secret_version" "db_credentials" {
 }
 
 # ECS Task Definition
-# TEMPORARY TEST: Using a public image to isolate the problem
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
   network_mode             = "awsvpc"
@@ -178,11 +177,22 @@ resource "aws_ecs_task_definition" "app" {
   container_definitions = jsonencode([
     {
       name      = "${var.project_name}-container"
-      # Use a public, known-good image
-      image     = "public.ecr.aws/nginx/nginx:latest"
+      image     = "${aws_ecr_repository.app.repository_url}:latest"
       essential = true
-      # Remove secrets and database variables
-      # No log configuration needed for this simple test
+      secrets = [
+        { name = "POSTGRES_USER", valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_USER::" },
+        { name = "POSTGRES_PASSWORD", valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_PASSWORD::" },
+        { name = "POSTGRES_SERVER", valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_SERVER::" },
+        { name = "POSTGRES_DB", valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_DB::" }
+      ],
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/${var.project_name}"
+          "awslogs-region"        = var.aws_region,
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
     }
   ])
 }
