@@ -4,10 +4,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 
-# Construct the database URL, escaping the password for safety
 database_url = (
-    f"postgresql://{settings.POSTGRES_USER}:"
-    f"{settings.POSTGRES_PASSWORD.replace('%', '%%')}@"
+    f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@"
     f"{settings.POSTGRES_SERVER}/{settings.POSTGRES_DB}"
 )
 
