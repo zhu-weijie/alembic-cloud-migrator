@@ -1,3 +1,5 @@
+# terraform/main.tf
+
 provider "random" {}
 
 # Configure the AWS Provider
@@ -10,195 +12,122 @@ resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
-
-  tags = {
-    Name = "${var.project_name}-vpc"
-  }
+  tags = { Name = "${var.project_name}-vpc" }
 }
 
 # 2. Subnets
-resource "aws_subnet" "public" {
+resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "${var.aws_region}a"
   map_public_ip_on_launch = true
+  tags = { Name = "${var.project_name}-public-a" }
+}
 
-  tags = {
-    Name = "${var.project_name}-public-subnet"
-  }
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "${var.aws_region}b"
+  map_public_ip_on_launch = true
+  tags = { Name = "${var.project_name}-public-b" }
 }
 
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.2.0/24"
+  cidr_block        = "10.0.3.0/24"
   availability_zone = "${var.aws_region}a"
-
-  tags = {
-    Name = "${var.project_name}-private-subnet"
-  }
+  tags = { Name = "${var.project_name}-private-a" }
 }
 
 resource "aws_subnet" "private_b" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.3.0/24" # A new, non-overlapping CIDR block
+  cidr_block        = "10.0.4.0/24"
   availability_zone = "${var.aws_region}b"
-
-  tags = {
-    Name = "${var.project_name}-private-subnet-b"
-  }
+  tags = { Name = "${var.project_name}-private-b" }
 }
 
-# 3. Internet Gateway for Public Subnet
+# 3. Internet Gateway
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "${var.project_name}-igw"
-  }
+  tags = { Name = "${var.project_name}-igw" }
 }
 
+# 4. Route Tables
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-
-  tags = {
-    Name = "${var.project_name}-public-rt"
-  }
+  tags = { Name = "${var.project_name}-public-rt" }
 }
 
-resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
+resource "aws_route_table_association" "public_a" {
+  subnet_id      = aws_subnet.public_a.id
   route_table_id = aws_route_table.public.id
 }
 
-# 4. NAT Gateway for Private Subnet
-resource "aws_eip" "nat" {
-  domain     = "vpc"
-  depends_on = [aws_internet_gateway.igw]
+resource "aws_route_table_association" "public_b" {
+  subnet_id      = aws_subnet.public_b.id
+  route_table_id = aws_route_table.public.id
 }
 
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
-
-  tags = {
-    Name = "${var.project_name}-nat"
-  }
-}
-
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
-  }
-
-  tags = {
-    Name = "${var.project_name}-private-rt"
-  }
-}
-
-resource "aws_route_table_association" "private_a" {
-  subnet_id      = aws_subnet.private_a.id
-  route_table_id = aws_route_table.private.id
-}
-
-resource "aws_route_table_association" "private_b" {
-  subnet_id      = aws_subnet.private_b.id
-  route_table_id = aws_route_table.private.id
-}
-
-# 5. ECR Repository
+# ECR Repository
 resource "aws_ecr_repository" "app" {
   name                 = var.project_name
   image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name = "${var.project_name}-repo"
-  }
+  image_scanning_configuration { scan_on_push = true }
+  tags = { Name = "${var.project_name}-repo" }
 }
 
-# 6. Security Groups
+# Security Groups
 resource "aws_security_group" "ecs_service" {
   name        = "${var.project_name}-ecs-sg"
-  description = "Allow all outbound traffic for ECS tasks"
+  description = "Security group for the ECS service"
   vpc_id      = aws_vpc.main.id
-
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "${var.project_name}-ecs-sg"
-  }
+  tags = { Name = "${var.project_name}-ecs-sg" }
 }
 
 resource "aws_security_group" "database" {
   name        = "${var.project_name}-db-sg"
   description = "Allow inbound postgres traffic from the ECS service"
   vpc_id      = aws_vpc.main.id
-
-  # Inbound rule from the ECS Security Group
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs_service.id]
   }
-
-  # Outbound rule (allow all)
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-db-sg"
-  }
+  tags = { Name = "${var.project_name}-db-sg" }
 }
 
-# 7. ECS Cluster
+# ECS Cluster
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
-
-  tags = {
-    Name = "${var.project_name}-cluster"
-  }
+  tags = { Name = "${var.project_name}-cluster" }
 }
 
-
-# 8. Database Subnet Group
+# Database Subnet Group
 resource "aws_db_subnet_group" "default" {
   name       = "${var.project_name}-db-subnet-group"
-  subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Now includes both subnets
-
-  tags = {
-    Name = "${var.project_name}-db-subnet-group"
-  }
+  subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+  tags = { Name = "${var.project_name}-db-subnet-group" }
 }
 
-# 9. Random Password for DB
+# Random Password for DB
 resource "random_password" "db_password" {
   length           = 16
   special          = true
-  override_special = "!#$%&'()*+,-./:;<=>?@[]^_`{|}~"
+  override_special = "!#$%&'()*+,-.:;<=>?[]^_`{|}~"
 }
 
-# 10. RDS PostgreSQL Instance
+# RDS PostgreSQL Instance
 resource "aws_db_instance" "default" {
   identifier             = "${var.project_name}-db"
   allocated_storage      = 20
@@ -215,16 +144,15 @@ resource "aws_db_instance" "default" {
   publicly_accessible    = false
 }
 
-# 11. Secrets Manager Secret
+# Secrets Manager Secret
+resource "aws_secretsmanager_secret" "db_credentials" {
+  name = "${var.project_name}-db-credentials-${random_string.secret_suffix.result}"
+}
 
 resource "random_string" "secret_suffix" {
   length  = 8
   special = false
   upper   = false
-}
-
-resource "aws_secretsmanager_secret" "db_credentials" {
-  name = "${var.project_name}-db-credentials-${random_string.secret_suffix.result}"
 }
 
 resource "aws_secretsmanager_secret_version" "db_credentials" {
@@ -237,75 +165,49 @@ resource "aws_secretsmanager_secret_version" "db_credentials" {
   })
 }
 
-# 12. ECS Task Definition
+# ECS Task Definition
+# TEMPORARY TEST: Using a public image to isolate the problem
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256" # 0.25 vCPU
-  memory                   = "512" # 512 MiB
+  cpu                      = "256"
+  memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name = "${var.project_name}-container"
-      # IMPORTANT: This is a placeholder. The CI/CD pipeline will replace this.
-      image     = "${aws_ecr_repository.app.repository_url}:latest"
+      name      = "${var.project_name}-container"
+      # Use a public, known-good image
+      image     = "public.ecr.aws/nginx/nginx:latest"
       essential = true
-      # This is how the container gets the database credentials securely
-      secrets = [
-        {
-          name      = "POSTGRES_USER",
-          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_USER::"
-        },
-        {
-          name      = "POSTGRES_PASSWORD",
-          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_PASSWORD::"
-        },
-        {
-          name      = "POSTGRES_SERVER",
-          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_SERVER::"
-        },
-        {
-          name      = "POSTGRES_DB",
-          valueFrom = "${aws_secretsmanager_secret.db_credentials.arn}:POSTGRES_DB::"
-        }
-      ],
-      logConfiguration = {
-        logDriver = "awslogs",
-        options = {
-          "awslogs-group"         = "/ecs/${var.project_name}",
-          "awslogs-region"        = var.aws_region,
-          "awslogs-stream-prefix" = "ecs"
-        }
-      }
+      # Remove secrets and database variables
+      # No log configuration needed for this simple test
     }
   ])
 }
 
-# This resource creates the CloudWatch log group defined in the task definition
+# CloudWatch Log Group
 resource "aws_cloudwatch_log_group" "ecs_logs" {
   name = "/ecs/${var.project_name}"
-
-  tags = {
-    Name = "${var.project_name}-log-group"
-  }
+  tags = { Name = "${var.project_name}-log-group" }
 }
 
-# 13. ECS Service
+# ECS Service
 resource "aws_ecs_service" "main" {
   name            = "${var.project_name}-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1 # Run one instance of our task
+  desired_count   = 1
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-    security_groups = [aws_security_group.ecs_service.id]
+    # THE BIG CHANGE: Use public subnets and assign a public IP
+    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+    security_groups  = [aws_security_group.ecs_service.id]
+    assign_public_ip = true
   }
 
-  # This dependency is important. It ensures that the NAT Gateway is ready
-  # before the service tries to pull an image from ECR.
-  depends_on = [aws_nat_gateway.nat]
+  # This ensures the IGW is up before the service tries to pull an image
+  depends_on = [aws_internet_gateway.igw]
 }
