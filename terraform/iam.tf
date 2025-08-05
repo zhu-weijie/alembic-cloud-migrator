@@ -81,6 +81,8 @@ resource "aws_iam_role" "github_actions" {
   assume_role_policy = data.aws_iam_policy_document.github_oidc_assume_role.json
 }
 
+# terraform/iam.tf
+
 resource "aws_iam_role_policy" "github_actions_ecr_ecs" {
   name = "GitHubActionsECRAndECSPolicy"
   role = aws_iam_role.github_actions.id
@@ -88,13 +90,13 @@ resource "aws_iam_role_policy" "github_actions_ecr_ecs" {
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      # CORRECTED: This action must have Resource "*"
+      # Allows the action to log in to ECR
       {
         Action   = "ecr:GetAuthorizationToken",
         Effect   = "Allow",
         Resource = "*"
       },
-      # This statement is for actions specific to our repository
+      # Allows the action to push images to our specific repo
       {
         Action = [
           "ecr:BatchCheckLayerAvailability",
@@ -106,15 +108,23 @@ resource "aws_iam_role_policy" "github_actions_ecr_ecs" {
         Effect   = "Allow",
         Resource = aws_ecr_repository.app.arn
       },
-      # This statement for ECS remains the same
+      # Allows the action to update the ECS service and task definitions
       {
         Action = [
           "ecs:DescribeTaskDefinition",
           "ecs:RegisterTaskDefinition",
-          "ecs:UpdateService"
+          "ecs:UpdateService",
+          "ecs:DescribeServices"
         ],
         Effect   = "Allow",
-        Resource = "*" # Simplified for this project
+        Resource = "*"
+      },
+      # --- NEWLY ADDED BLOCK ---
+      # Allows the GitHub role to pass the task execution role to the ECS service.
+      {
+        Action   = "iam:PassRole",
+        Effect   = "Allow",
+        Resource = aws_iam_role.ecs_task_execution_role.arn
       }
     ]
   })
